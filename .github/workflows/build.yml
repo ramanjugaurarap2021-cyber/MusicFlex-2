@@ -1,0 +1,111 @@
+name: Build MusicFlex APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract MusicFlex project
+        run: |
+          mkdir -p extracted
+          unzip -q *.zip -d extracted
+
+          echo "=== Extracted ==="
+          find extracted -maxdepth 4 -type f | head -100
+
+      - name: Find project
+        run: |
+          APP_GRADLE=$(find extracted -type f -path "*/app/build.gradle.kts" | head -n 1)
+
+          if [ -z "$APP_GRADLE" ]; then
+            echo "ERROR: app/build.gradle.kts not found"
+            find extracted -maxdepth 6 -type f
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$(dirname "$APP_GRADLE")")
+
+          echo "APP_GRADLE=$APP_GRADLE"
+          echo "PROJECT_DIR=$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Fix Java/Kotlin compatibility
+        run: |
+          cd "$PROJECT_DIR"
+
+          cat >> app/build.gradle.kts <<'EOF'
+
+          android {
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+          }
+
+          kotlin {
+              jvmToolchain(17)
+          }
+          EOF
+
+      - name: Fix Kotlin lambda error
+        run: |
+          cd "$PROJECT_DIR"
+
+          FILE="app/src/main/java/com/musicflex/app/MainActivity.kt"
+
+          if [ -f "$FILE" ]; then
+            sed -i 's/runOnUiThread { if (controller == null) pending.addLast(action) else action() }/runOnUiThread { if (controller == null) pending.addLast { action() } else action() }/' "$FILE"
+          fi
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        run: |
+          SDKMANAGER=$(find "$ANDROID_SDK_ROOT" -type f -name sdkmanager 2>/dev/null | head -n 1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found"
+            exit 1
+          fi
+
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+
+          yes | "$SDKMANAGER" --licenses || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build MusicFlex APK
+        run: |
+          cd "$PROJECT_DIR"
+          gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicFlex-5.2-debug
+          path: '**/app/build/outputs/apk/debug/app-debug.apk'
+          if-no-files-found: error
